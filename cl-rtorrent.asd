@@ -9,14 +9,7 @@
   :components
   ((:module #:bencode
     :components
-    ((:file "package")
-     (:file "util")
-     (:file "style")
-     (:file "decode")
-     (:file "encode")
-     (:file "style-sexp")
-     (:file "style-tagged-sexp")
-     (:file "style-modern")))
+    ((:file "bencode")))
    (:file "package")
    (:file "cl-rtorrent")))
 
