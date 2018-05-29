@@ -25,22 +25,34 @@
        ((not ,test-form))
      ,@body))
 
-(defun ->singleton-list (value)
+(defun singleton-list (value)
   (if (null value)
       nil
       (list value)))
+
+(defgeneric make-collector (type))
 
 (defgeneric collect (collector &rest args)
   (:documentation "Adds element(s) to the collector.
 
 Depending on specific collector the arguments can be treated differently."))
 
+(defgeneric finalize-collector (collector))
+
+(defmethod finalize-collector (collector)
+  collector)
+
+(defmacro collecting (var type &body body)
+  `(let ((,var (make-collector ,type)))
+     ,@body
+     (finalize-collector ,var)))
+
 ;; Octet
 
 (deftype octet ()
   '(unsigned-byte 8))
 
-(defun ->octets (&rest contents)
+(defun octets-of (&rest contents)
   (make-array (length contents)
 	      :element-type 'octet
 	      :initial-contents contents))
@@ -48,18 +60,23 @@ Depending on specific collector the arguments can be treated differently."))
 (defclass octets-collector ()
   ((backing-vector :initarg :backing-vector :reader backing-vector)))
 
+(defmethod make-collector ((type (eql 'octets-collector)))
+  (make-instance 'octets-collector
+		 :backing-vector (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t)))
+
 (defmethod collect ((octets octets-collector) &rest args)
   (destructuring-bind (value) args
     (with-slots (backing-vector) octets
       (vector-push-extend value backing-vector))))
 
+(defmethod finalize-collector ((octets octets-collector))
+  (with-slots (backing-vector) octets
+    (make-array (length backing-vector) :element-type 'octet :initial-contents backing-vector)))
+
 (defmacro collecting-octets (octets &body body)
-  `(let ((,octets
-	   (make-instance 'octets-collector
-			  :backing-vector (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t))))
+  `(let ((,octets (make-collector 'octets-collector)))
      ,@body
-     (with-slots (backing-vector) ,octets
-       (->octets backing-vector))))
+     (finalize ,octets)))
 
 ;; ASCII
 
@@ -76,7 +93,7 @@ Depending on specific collector the arguments can be treated differently."))
     (elt octets 0)))
 
 (defun octet->ascii-char (octet)
-  (let ((chars (octets-to-string (->octets octet))))
+  (let ((chars (octets-to-string (octets-of octet))))
     (when (> (length chars) 1)
       (error 'unsupported-ascii-octet :the-octet octet))
     (char chars 0)))
@@ -112,7 +129,7 @@ Depending on specific collector the arguments can be treated differently."))
 ;; Traverse methods
 
 (defun traverse (path object &key (style *style*))
-  (let ((list (->singleton-list object)))
+  (let ((list (singleton-list object)))
     (dolist (key path)
       (setf list
 	    (let ((*style* :sexp))
@@ -140,10 +157,10 @@ Depending on specific collector the arguments can be treated differently."))
 	     :the-octet it
 	     :expected-octets (->octets (ascii-char->octet char))))))
 
-(defun read-until-ascii-char (char)
+(defun read-until-ascii-char (char) 
   (collecting-octets octets
-		     (let-while it (read-byte *read-stream*) (/= it (ascii-char->octet char))
-		       (collect octets it))))
+    (let-while it (read-byte *read-stream*) (/= it (ascii-char->octet char)) 
+      (collect octets it))))
 
 (defun read-string-length ()
   (parse-integer
@@ -258,7 +275,7 @@ Depending on specific collector the arguments can be treated differently."))
   (write-ascii-char #\:)
   (write-sequence octets *write-stream*))
 
-(defun ->string (object &key (style *style*))
+(defun encode-to-string (object &key (style *style*))
   (octets-to-string (with-output-to-sequence (stream)
 		      (encode object stream :style style))
 		    :encoding :utf-8 :errorp nil))
@@ -318,11 +335,11 @@ Depending on specific collector the arguments can be treated differently."))
 
 (defmethod traverse-key ((key integer) list (style (eql :sexp)))
   (let ((value (nth key list)))
-    (->singleton-list value)))
+    (singleton-list value)))
 
 (defmethod traverse-key ((key string) dict (style (eql :sexp)))
   (let ((value (rest (assoc key dict :test #'string=))))
-    (->singleton-list value)))
+    (singleton-list value)))
 
 (defmethod traverse-key ((key (eql 'list*)) list (style (eql :sexp)))
   `(,@list))
@@ -487,6 +504,7 @@ Depending on specific collector the arguments can be treated differently."))
 (defmethod write-value ((dict #.(class-of (make-hash-table :test 'equal)))
 			(style (eql :modern)))
   (write-ascii-char #\d)
+  ;; TODO sort!
   (maphash #'(lambda (key value)
 	       (write-value-in-style key)
 	       (write-value-in-style value))
@@ -495,24 +513,62 @@ Depending on specific collector the arguments can be treated differently."))
 
 ;; Object model
 
+(deftype btype ()
+  '(member :bint :bstr :blist :bdict))
+
 (defclass bfield () ())
+
+(defgeneric btype-of (field))
 
 (defclass bint (bfield)
   ((octets :initarg :octets :reader octets)))
 
+(defmethod btype-of ((field bint)) :bint)
+
+(defclass bint-collector (octet-collector) ())
+
+(defmethod make-collector ((type (eql 'bint)))
+  (make-instance 'bint-collector))
+
+(defmethod finalize-collector ((collector bint-collector))
+  (with-slots (backing-vector) collector
+    (make-instance 'bint :octets backing-vector)))
+
 (defclass bstr (bfield)
   ((octets :initarg :octets :reader octets)))
 
+(defmethod btype-of ((field bstr)) :bstr)
+
+(defclass bstr-collector (octet-collector) ())
+
+(defmethod make-collector ((type (eql 'bstr)))
+  (make-instance 'bstr-collector))
+
+(defmethod finalize-collector ((collector bstr-collector))
+  (with-slots (backing-vector) collector
+    (make-instance 'bstr :octets backing-vector)))
+
 (defclass blist (bfield) ())
+
+(defmethod btype-of ((field blist)) :blist)
+
+(defclass blist-list (blist)
+  ((elements :initarg :elements :reader elements :initform nil)))
+
+(defmethod make-collector ((type (eql 'blist-list)))
+  (make-instance 'blist-list))
+
+(defmethod collect ((collector blist-list) &rest args) 
+  (destructuring-bind (element) args
+    ;; (unless (typep element 'bfield)
+    ;;   (error ""))
+    (with-slots (elements) collector
+      (push element elements))))
+
+(defmethod finalize-collector ((collector blist-list))
+  (with-slots (elements) collector
+    (nreverse elements)))
 
 (defclass bdict (bfield) ())
 
-(defgeneric make-bfield (type))
-
-(defgeneric bfield-set (field value))
-
-(defgeneric bfield-get (field))
-
-(defgeneric blist-add (list element))
-
-(defgeneric bdict-add (dict key element))
+(defmethod btype-of ((field bdict)) :bdict)
