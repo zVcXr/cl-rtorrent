@@ -4,8 +4,7 @@
    :flexi-stream
    :make-flexi-stream
    :make-in-memory-input-stream
-   :with-output-to-sequence
-   :unread-byte)
+   :with-output-to-sequence)
   (:import-from #:babel
    :octets-to-string
    :string-to-octets
@@ -117,10 +116,10 @@ Depending on specific collector the arguments can be treated differently."))
     (dolist (key path)
       (setf list
 	    (let ((*style* :sexp))
-	      (collecting-blist new-list :sexp
-				(dolist (obj list)
-				  (dolist (new-obj (traverse-key key obj style))
-				    (collect new-list new-obj)))))))
+	      (collecting-blist new-list
+		(dolist (obj list)
+		  (dolist (new-obj (traverse-key key obj style))
+		    (collect new-list new-obj)))))))
     list))
 
 (defgeneric traverse-key (key object style)
@@ -154,9 +153,11 @@ Depending on specific collector the arguments can be treated differently."))
 
 (defun read-string ()
   (let* ((length (read-string-length))
-	 (octets (collecting-octets octets
-				    (dotimes (i length)
-				      (collect octets (read-byte *read-stream*))))))
+	 (octets
+	   (collecting-octets octets
+	     (dotimes (i length)
+	       (collect octets (read-byte *read-stream*))))))
+    ;; TODO: this is not the right place for string decoding
     (handler-case (octets-to-string octets :encoding :utf-8)
       (character-decoding-error () octets))))
 
@@ -168,23 +169,23 @@ Depending on specific collector the arguments can be treated differently."))
     :encoding :ascii)))
 
 (defmacro peek-byte (&rest args)
-  `(let ((the-byte (funcall #'read-byte *read-stream* ,@args)))
-     (unread-byte the-byte *read-stream*)
-     the-byte))
+  `(flexi-streams:peek-byte *read-stream* ,@args))
 
 (defun read-list ()
   (read-ascii-char #\l)
-  (let ((the-list (collecting-blist list
-				    (let-while it (peek-byte nil) (and it (/= it (ascii-char->octet #\e)))
-				      (collect list (read-value))))))
+  (let ((the-list
+	  (collecting-blist list
+	    (let-while it (peek-byte) (and it (/= it (ascii-char->octet #\e)))
+	      (collect list (read-value))))))
     (read-ascii-char #\e)
     the-list))
 
 (defun read-dict () 
   (read-ascii-char #\d)
-  (let ((the-dict (collecting-bdict dict
-				    (let-while it (peek-byte nil) (and it (/= it (ascii-char->octet #\e)))
-				      (collect dict (read-string) (read-value))))))
+  (let ((the-dict
+	  (collecting-bdict dict
+	    (let-while it (peek-byte) (and it (/= it (ascii-char->octet #\e)))
+	      (collect dict (read-string) (read-value))))))
     (read-ascii-char #\e)
     the-dict))
 
@@ -491,3 +492,27 @@ Depending on specific collector the arguments can be treated differently."))
 	       (write-value-in-style value))
 	   dict)
   (write-ascii-char #\e))
+
+;; Object model
+
+(defclass bfield () ())
+
+(defclass bint (bfield)
+  ((octets :initarg :octets :reader octets)))
+
+(defclass bstr (bfield)
+  ((octets :initarg :octets :reader octets)))
+
+(defclass blist (bfield) ())
+
+(defclass bdict (bfield) ())
+
+(defgeneric make-bfield (type))
+
+(defgeneric bfield-set (field value))
+
+(defgeneric bfield-get (field))
+
+(defgeneric blist-add (list element))
+
+(defgeneric bdict-add (dict key element))

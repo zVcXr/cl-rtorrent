@@ -1,0 +1,3 @@
+[submodule "bittorrent.org"]
+	path = bittorrent.org
+	url = https://github.com/bittorrent/bittorrent.org.git
