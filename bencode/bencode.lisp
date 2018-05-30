@@ -32,6 +32,9 @@
 
 (defgeneric make-collector (type))
 
+(defmethod make-collector (type)
+  (make-instance type))
+
 (defgeneric collect (collector &rest args)
   (:documentation "Adds element(s) to the collector.
 
@@ -52,31 +55,36 @@ Depending on specific collector the arguments can be treated differently."))
 (deftype octet ()
   '(unsigned-byte 8))
 
-(defun octets-of (&rest contents)
+(defun arguments-to-octets (&rest contents)
   (make-array (length contents)
 	      :element-type 'octet
 	      :initial-contents contents))
 
 (defclass octets-collector ()
-  ((backing-vector :initarg :backing-vector :reader backing-vector)))
+  ((octets :initarg :octets :reader octets)))
 
 (defmethod make-collector ((type (eql 'octets-collector)))
   (make-instance 'octets-collector
-		 :backing-vector (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t)))
+		 :octets (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t)))
 
-(defmethod collect ((octets octets-collector) &rest args)
-  (destructuring-bind (value) args
-    (with-slots (backing-vector) octets
-      (vector-push-extend value backing-vector))))
+(defmethod collect ((collector octets-collector) &rest args)
+  (destructuring-bind (octet) args
+    (check-type octet octet)
+    (octets-collect collector octet)))
 
-(defmethod finalize-collector ((octets octets-collector))
-  (with-slots (backing-vector) octets
-    (make-array (length backing-vector) :element-type 'octet :initial-contents backing-vector)))
+(defgeneric octets-collect (collector octet))
+
+(defmethod octets-collect ((collector octets-collector) octet)
+  (with-slots (octets) collector
+    (vector-push-extend octet octets)))
+
+(defmethod finalize-collector ((collector octets-collector))
+  (with-slots (octets) collector
+    (make-array (length octets) :element-type 'octet :initial-contents octets)))
 
 (defmacro collecting-octets (octets &body body)
-  `(let ((,octets (make-collector 'octets-collector)))
-     ,@body
-     (finalize ,octets)))
+  `(collecting ,octets 'octets-collector
+     ,@body))
 
 ;; ASCII
 
@@ -93,7 +101,7 @@ Depending on specific collector the arguments can be treated differently."))
     (elt octets 0)))
 
 (defun octet->ascii-char (octet)
-  (let ((chars (octets-to-string (octets-of octet))))
+  (let ((chars (octets-to-string (arguments-to-octets octet))))
     (when (> (length chars) 1)
       (error 'unsupported-ascii-octet :the-octet octet))
     (char chars 0)))
@@ -155,7 +163,7 @@ Depending on specific collector the arguments can be treated differently."))
     (unless (= it (ascii-char->octet char))
       (error 'unexpected-octet
 	     :the-octet it
-	     :expected-octets (->octets (ascii-char->octet char))))))
+	     :expected-octets (arguments-to-octets (ascii-char->octet char))))))
 
 (defun read-until-ascii-char (char) 
   (collecting-octets octets
@@ -525,50 +533,94 @@ Depending on specific collector the arguments can be treated differently."))
 
 (defmethod btype-of ((field bint)) :bint)
 
-(defclass bint-collector (octet-collector) ())
+(defclass bint-collector (octets-collector) ())
 
 (defmethod make-collector ((type (eql 'bint)))
   (make-instance 'bint-collector))
 
 (defmethod finalize-collector ((collector bint-collector))
-  (with-slots (backing-vector) collector
-    (make-instance 'bint :octets backing-vector)))
+  (with-slots (octets) collector
+    (make-instance 'bint :octets octets)))
 
 (defclass bstr (bfield)
   ((octets :initarg :octets :reader octets)))
 
 (defmethod btype-of ((field bstr)) :bstr)
 
-(defclass bstr-collector (octet-collector) ())
+(defclass bstr-collector (octets-collector) ())
 
 (defmethod make-collector ((type (eql 'bstr)))
   (make-instance 'bstr-collector))
 
 (defmethod finalize-collector ((collector bstr-collector))
-  (with-slots (backing-vector) collector
-    (make-instance 'bstr :octets backing-vector)))
+  (with-slots (octets) collector
+    (make-instance 'bstr :octets octets)))
+
+(defclass finalizable-once-collector ()
+  ((finalized-p :initform nil)))
+
+(defmethod collect :around ((collector finalizable-once-collector) &rest args)
+  (declare (ignore args))
+  (with-slots (finalized-p) collector
+    ;; TODO throw error?
+    (unless finalized-p
+      (call-next-method))))
+
+(defmethod finalize-collector :around ((collector finalizable-once-collector))
+  (with-slots (finalized-p) collector
+    ;; TODO throw error?
+    (unless finalized-p
+      (let ((result (call-next-method)))
+	(setf finalized-p t)
+	result))))
 
 (defclass blist (bfield) ())
 
 (defmethod btype-of ((field blist)) :blist)
 
-(defclass blist-list (blist)
+(defclass blist-collector () ())
+
+(defgeneric blist-collect (collector element))
+
+(defmethod collect ((collector blist-collector) &rest args)
+  (destructuring-bind (element) args
+    (check-type element bfield)
+    (blist-collect collector element)))
+
+(defclass blist-list (blist blist-collector finalizable-once-collector)
   ((elements :initarg :elements :reader elements :initform nil)))
 
-(defmethod make-collector ((type (eql 'blist-list)))
-  (make-instance 'blist-list))
-
-(defmethod collect ((collector blist-list) &rest args) 
-  (destructuring-bind (element) args
-    ;; (unless (typep element 'bfield)
-    ;;   (error ""))
-    (with-slots (elements) collector
-      (push element elements))))
+(defmethod blist-collect ((collector blist-list) element)
+  (with-slots (elements) collector
+    (push element elements)))
 
 (defmethod finalize-collector ((collector blist-list))
   (with-slots (elements) collector
-    (nreverse elements)))
+    (setf elements (nreverse elements)))
+  collector)
 
 (defclass bdict (bfield) ())
 
 (defmethod btype-of ((field bdict)) :bdict)
+
+(defclass bdict-collector () ())
+
+(defgeneric bdict-collect (collector key value))
+
+(defmethod collect ((collector bdict-collector) &rest args)
+  (destructuring-bind (key value) args
+    (check-type key bstr)
+    (check-type value bfield)
+    (bdict-collect collector key value)))
+
+(defclass bdict-alist (bdict bdict-collector finalizable-once-collector)
+  ((elements :initarg :elements :reader elements :initform nil)))
+
+(defmethod bdict-collect ((collector bdict-alist) key value)
+  (with-slots (elements) collector
+    (setf elements (acons key value elements))))
+
+(defmethod finalize-collector ((collector bdict-alist))
+  (with-slots (elements) collector
+    (setf elements (nreverse elements)))
+  collector)
