@@ -521,22 +521,12 @@ Depending on specific collector the arguments can be treated differently."))
 
 ;; Object model
 
-(deftype btype ()
-  '(member :bint :bstr :blist :bdict))
-
 (defclass bfield () ())
-
-(defgeneric btype-of (field))
 
 (defclass bint (bfield)
   ((octets :initarg :octets :reader octets)))
 
-(defmethod btype-of ((field bint)) :bint)
-
 (defclass bint-collector (octets-collector) ())
-
-(defmethod make-collector ((type (eql 'bint)))
-  (make-instance 'bint-collector))
 
 (defmethod finalize-collector ((collector bint-collector))
   (with-slots (octets) collector
@@ -545,12 +535,7 @@ Depending on specific collector the arguments can be treated differently."))
 (defclass bstr (bfield)
   ((octets :initarg :octets :reader octets)))
 
-(defmethod btype-of ((field bstr)) :bstr)
-
 (defclass bstr-collector (octets-collector) ())
-
-(defmethod make-collector ((type (eql 'bstr)))
-  (make-instance 'bstr-collector))
 
 (defmethod finalize-collector ((collector bstr-collector))
   (with-slots (octets) collector
@@ -562,21 +547,19 @@ Depending on specific collector the arguments can be treated differently."))
 (defmethod collect :around ((collector finalizable-once-collector) &rest args)
   (declare (ignore args))
   (with-slots (finalized-p) collector
-    ;; TODO throw error?
+    ;; TODO signal error?
     (unless finalized-p
       (call-next-method))))
 
 (defmethod finalize-collector :around ((collector finalizable-once-collector))
   (with-slots (finalized-p) collector
-    ;; TODO throw error?
+    ;; TODO signal error?
     (unless finalized-p
       (let ((result (call-next-method)))
 	(setf finalized-p t)
 	result))))
 
 (defclass blist (bfield) ())
-
-(defmethod btype-of ((field blist)) :blist)
 
 (defclass blist-collector () ())
 
@@ -600,8 +583,6 @@ Depending on specific collector the arguments can be treated differently."))
   collector)
 
 (defclass bdict (bfield) ())
-
-(defmethod btype-of ((field bdict)) :bdict)
 
 (defclass bdict-collector () ())
 
