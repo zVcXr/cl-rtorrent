@@ -86,6 +86,93 @@ Depending on specific collector the arguments can be treated differently."))
   `(collecting ,octets 'octets-collector
      ,@body))
 
+;; Object model
+
+(defclass bfield () ())
+
+(defclass bint (bfield)
+  ((octets :initarg :octets :reader octets)))
+
+(defclass bint-collector (octets-collector) ())
+
+(defmethod finalize-collector ((collector bint-collector))
+  (with-slots (octets) collector
+    (make-instance 'bint :octets octets)))
+
+(defclass bstr (bfield)
+  ((octets :initarg :octets :reader octets)))
+
+(defclass bstr-collector (octets-collector) ())
+
+(defmethod finalize-collector ((collector bstr-collector))
+  (with-slots (octets) collector
+    (make-instance 'bstr :octets octets)))
+
+(defclass finalizable-once-collector ()
+  ((finalized-p :initform nil)))
+
+(defmethod collect :around ((collector finalizable-once-collector) &rest args)
+  (declare (ignore args))
+  (with-slots (finalized-p) collector
+    ;; TODO signal error?
+    (unless finalized-p
+      (call-next-method))))
+
+(defmethod finalize-collector :around ((collector finalizable-once-collector))
+  (with-slots (finalized-p) collector
+    ;; TODO signal error?
+    (unless finalized-p
+      (let ((result (call-next-method)))
+	(setf finalized-p t)
+	result))))
+
+(defclass blist (bfield) ())
+
+(defclass blist-collector () ())
+
+(defgeneric blist-collect (collector element))
+
+(defmethod collect ((collector blist-collector) &rest args)
+  (destructuring-bind (element) args
+    (check-type element bfield)
+    (blist-collect collector element)))
+
+(defclass blist-list (blist blist-collector finalizable-once-collector)
+  ((elements :initarg :elements :reader elements :initform nil)))
+
+(defmethod blist-collect ((collector blist-list) element)
+  (with-slots (elements) collector
+    (push element elements)))
+
+(defmethod finalize-collector ((collector blist-list))
+  (with-slots (elements) collector
+    (setf elements (nreverse elements)))
+  collector)
+
+(defclass bdict (bfield) ())
+
+(defclass bdict-collector () ())
+
+(defgeneric bdict-collect (collector key value))
+
+(defmethod collect ((collector bdict-collector) &rest args)
+  (destructuring-bind (key value) args
+    (check-type key bstr)
+    (check-type value bfield)
+    (bdict-collect collector key value)))
+
+(defclass bdict-alist (bdict bdict-collector finalizable-once-collector)
+  ((elements :initarg :elements :reader elements :initform nil)))
+
+(defmethod bdict-collect ((collector bdict-alist) key value)
+  (with-slots (elements) collector
+    (setf elements (acons key value elements))))
+
+(defmethod finalize-collector ((collector bdict-alist))
+  (with-slots (elements) collector
+    (setf elements (nreverse elements)))
+  collector)
+
 ;; ASCII
 
 (define-condition unsupported-ascii-octet (error)
@@ -518,90 +605,3 @@ Depending on specific collector the arguments can be treated differently."))
 	       (write-value-in-style value))
 	   dict)
   (write-ascii-char #\e))
-
-;; Object model
-
-(defclass bfield () ())
-
-(defclass bint (bfield)
-  ((octets :initarg :octets :reader octets)))
-
-(defclass bint-collector (octets-collector) ())
-
-(defmethod finalize-collector ((collector bint-collector))
-  (with-slots (octets) collector
-    (make-instance 'bint :octets octets)))
-
-(defclass bstr (bfield)
-  ((octets :initarg :octets :reader octets)))
-
-(defclass bstr-collector (octets-collector) ())
-
-(defmethod finalize-collector ((collector bstr-collector))
-  (with-slots (octets) collector
-    (make-instance 'bstr :octets octets)))
-
-(defclass finalizable-once-collector ()
-  ((finalized-p :initform nil)))
-
-(defmethod collect :around ((collector finalizable-once-collector) &rest args)
-  (declare (ignore args))
-  (with-slots (finalized-p) collector
-    ;; TODO signal error?
-    (unless finalized-p
-      (call-next-method))))
-
-(defmethod finalize-collector :around ((collector finalizable-once-collector))
-  (with-slots (finalized-p) collector
-    ;; TODO signal error?
-    (unless finalized-p
-      (let ((result (call-next-method)))
-	(setf finalized-p t)
-	result))))
-
-(defclass blist (bfield) ())
-
-(defclass blist-collector () ())
-
-(defgeneric blist-collect (collector element))
-
-(defmethod collect ((collector blist-collector) &rest args)
-  (destructuring-bind (element) args
-    (check-type element bfield)
-    (blist-collect collector element)))
-
-(defclass blist-list (blist blist-collector finalizable-once-collector)
-  ((elements :initarg :elements :reader elements :initform nil)))
-
-(defmethod blist-collect ((collector blist-list) element)
-  (with-slots (elements) collector
-    (push element elements)))
-
-(defmethod finalize-collector ((collector blist-list))
-  (with-slots (elements) collector
-    (setf elements (nreverse elements)))
-  collector)
-
-(defclass bdict (bfield) ())
-
-(defclass bdict-collector () ())
-
-(defgeneric bdict-collect (collector key value))
-
-(defmethod collect ((collector bdict-collector) &rest args)
-  (destructuring-bind (key value) args
-    (check-type key bstr)
-    (check-type value bfield)
-    (bdict-collect collector key value)))
-
-(defclass bdict-alist (bdict bdict-collector finalizable-once-collector)
-  ((elements :initarg :elements :reader elements :initform nil)))
-
-(defmethod bdict-collect ((collector bdict-alist) key value)
-  (with-slots (elements) collector
-    (setf elements (acons key value elements))))
-
-(defmethod finalize-collector ((collector bdict-alist))
-  (with-slots (elements) collector
-    (setf elements (nreverse elements)))
-  collector)
