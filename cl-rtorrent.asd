@@ -5,7 +5,7 @@
   :author "Your Name <your.name@example.com>"
   :license "Specify license here"
   :serial t
-  :depends-on (#:cl-fad #:flexi-streams #:babel)
+  :depends-on (#:cl-fad #:flexi-streams #:babel #:alexandria)
   :components
   ((:module #:bencode
     :components

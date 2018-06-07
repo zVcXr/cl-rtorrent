@@ -35,10 +35,32 @@
 (defmethod make-collector (type)
   (make-instance type))
 
-(defgeneric collect (collector &rest args)
+(defmacro register-collector (collector-type type &body body)
+  `(defmethod make-collector ((type (eql ,type)))
+     (make-instance ,collector-type ,@body)))
+
+(defgeneric collect (collector &rest arguments)
   (:documentation "Adds element(s) to the collector.
 
 Depending on specific collector the arguments can be treated differently."))
+
+(defmacro define-collect-with-arguments (method-name (collector-name collector-type) (&rest arguments) &body body)
+  (flet ((generate-check-types (arguments)
+	   (mapcar #'(lambda (thing)
+		       (when (and (consp thing) (>= (length thing) 2))
+			 (destructuring-bind (name type) thing
+			   `(check-type ,name ,type))))
+		   arguments)))
+    (let ((argument-names (mapcar #'alexandria:ensure-car arguments)))
+      `(progn
+	 (defgeneric ,method-name (,collector-name ,@argument-names))
+	 ,@(when body
+	     (list `(defmethod ,method-name ((,collector-name ,collector-type) ,@argument-names)
+		      ,@body)))
+	 (defmethod collect ((,collector-name ,collector-type) &rest arguments)
+	   (destructuring-bind (,@argument-names) arguments
+	     ,@(generate-check-types arguments)
+	     (,method-name ,collector-name ,@argument-names)))))))
 
 (defgeneric finalize-collector (collector))
 
@@ -55,26 +77,20 @@ Depending on specific collector the arguments can be treated differently."))
 (deftype octet ()
   '(unsigned-byte 8))
 
+(deftype octets ()
+  '(array octet *))
+
 (defun arguments-to-octets (&rest contents)
   (make-array (length contents)
 	      :element-type 'octet
 	      :initial-contents contents))
 
 (defclass octets-collector ()
-  ((octets :initarg :octets :reader octets)))
+  ((octets :initarg :octets :reader octets
+	   :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t))))
 
-(defmethod make-collector ((type (eql 'octets-collector)))
-  (make-instance 'octets-collector
-		 :octets (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t)))
-
-(defmethod collect ((collector octets-collector) &rest args)
-  (destructuring-bind (octet) args
-    (check-type octet octet)
-    (octets-collect collector octet)))
-
-(defgeneric octets-collect (collector octet))
-
-(defmethod octets-collect ((collector octets-collector) octet)
+(register-collector 'octets-collector 'octets)
+(define-collect-with-arguments octets-collect (collector octets-collector) ((octet octet))
   (with-slots (octets) collector
     (vector-push-extend octet octets)))
 
@@ -88,9 +104,9 @@ Depending on specific collector the arguments can be treated differently."))
 
 ;; Object model
 
-(defclass bfield () ())
+(defclass bclass () ())
 
-(defclass bint (bfield)
+(defclass bint (bclass)
   ((octets :initarg :octets :reader octets)))
 
 (defclass bint-collector (octets-collector) ())
@@ -99,7 +115,7 @@ Depending on specific collector the arguments can be treated differently."))
   (with-slots (octets) collector
     (make-instance 'bint :octets octets)))
 
-(defclass bstr (bfield)
+(defclass bstr (bclass)
   ((octets :initarg :octets :reader octets)))
 
 (defclass bstr-collector (octets-collector) ())
@@ -126,16 +142,13 @@ Depending on specific collector the arguments can be treated differently."))
 	(setf finalized-p t)
 	result))))
 
-(defclass blist (bfield) ())
+(defclass blist (bclass) ())
 
 (defclass blist-collector () ())
 
 (defgeneric blist-collect (collector element))
 
-(defmethod collect ((collector blist-collector) &rest args)
-  (destructuring-bind (element) args
-    (check-type element bfield)
-    (blist-collect collector element)))
+(define-collect-with-arguments blist-collect (collector blist-collector) ((element bclass)))
 
 (defclass blist-list (blist blist-collector finalizable-once-collector)
   ((elements :initarg :elements :reader elements :initform nil)))
@@ -149,17 +162,26 @@ Depending on specific collector the arguments can be treated differently."))
     (setf elements (nreverse elements)))
   collector)
 
-(defclass bdict (bfield) ())
+(defclass blist-vector (blist)
+  ((elements :initarg :elements :reader elements)))
+
+(defclass blist-vector-collector (blist-collector)
+  ((elements :initarg :elements :reader elements
+	     :initform (make-array 0 :element-type 'bclass :fill-pointer 0 :adjustable t))))
+
+(defmethod blist-collect ((collector blist-vector-collector) element)
+  (with-slots (elements) collector
+    (vector-push-extend element elements)))
+
+(defmethod finalize-collector ((collector blist-vector-collector))
+  (with-slots (elements) collector
+    (make-instance 'blist-vector :elements elements)))
+
+(defclass bdict (bclass) ())
 
 (defclass bdict-collector () ())
 
-(defgeneric bdict-collect (collector key value))
-
-(defmethod collect ((collector bdict-collector) &rest args)
-  (destructuring-bind (key value) args
-    (check-type key bstr)
-    (check-type value bfield)
-    (bdict-collect collector key value)))
+(define-collect-with-arguments bdict-collect (collector bdict-collector) ((key bstr) (value bclass)))
 
 (defclass bdict-alist (bdict bdict-collector finalizable-once-collector)
   ((elements :initarg :elements :reader elements :initform nil)))
@@ -172,6 +194,10 @@ Depending on specific collector the arguments can be treated differently."))
   (with-slots (elements) collector
     (setf elements (nreverse elements)))
   collector)
+
+(defclass bdict-hashmap (bdict)
+  ((elements :initarg :elements :reader elements
+	     :initform (make-hash-table ))))
 
 ;; ASCII
 
