@@ -16,10 +16,6 @@
 
 (in-package #:bencode)
 
-(defmacro with-gensyms ((&rest names) &body body)
-  `(let ,(mapcar #'(lambda (name) `(,name (gensym))) names)
-     ,@body))
-
 (defmacro let-while (var step-form test-form &body body)
   `(do ((,var ,step-form ,step-form))
        ((not ,test-form))
@@ -44,6 +40,9 @@
 
 Depending on specific collector the arguments can be treated differently."))
 
+(defun make-keyword (name)
+  (values (intern (string-upcase (string name)) "KEYWORD")))
+
 (defmacro define-collect-with-arguments (method-name (collector-name collector-type) (&rest arguments) &body body)
   (flet ((generate-check-types (arguments)
 	   (mapcar #'(lambda (thing)
@@ -61,6 +60,40 @@ Depending on specific collector the arguments can be treated differently."))
 	   (destructuring-bind (,@argument-names) arguments
 	     ,@(generate-check-types arguments)
 	     (,method-name ,collector-name ,@argument-names)))))))
+
+(defmacro define-collector (type (collector-name collector-type (&rest superclasses)) (&rest slots) &body body)
+  (flet ((expand-slot-description (slot)
+	   (destructuring-bind (name &rest slot-options &key &allow-other-keys) slot
+	     `(,name :initarg ,(getf slot-options :initarg (make-keyword name))
+		     :reader ,(getf slot-options :reader name)
+		     ,@(alexandria:remove-from-plist slot-options :initarg :reader)))))
+    `(progn
+       (defclass ,collector-type (,@superclasses)
+	 (,@(mapcar #'expand-slot-description slots)))
+       )))
+
+;; (define-collector 'octets (collector octets-collector ())
+;;   ((octets :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t)))
+;;   (:collect ((octet octet)) (vector-push-extend octet octets))
+;;   (make-array (length octets) :element-type 'octet :initial-contents octets))
+
+(defclass octets-collector ()
+  ((octets :initarg :octets :reader octets
+	   :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t))))
+
+(register-collector 'octets-collector 'octets)
+
+(define-collect-with-arguments octets-collect (collector octets-collector) ((octet octet))
+  (with-slots (octets) collector
+    (vector-push-extend octet octets)))
+
+(defmethod finalize-collector ((collector octets-collector))
+  (with-slots (octets) collector
+    (make-array (length octets) :element-type 'octet :initial-contents octets)))
+
+(defmacro collecting-octets (octets &body body)
+  `(collecting ,octets 'octets-collector
+     ,@body))
 
 (defgeneric finalize-collector (collector))
 
@@ -90,6 +123,7 @@ Depending on specific collector the arguments can be treated differently."))
 	   :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t))))
 
 (register-collector 'octets-collector 'octets)
+
 (define-collect-with-arguments octets-collect (collector octets-collector) ((octet octet))
   (with-slots (octets) collector
     (vector-push-extend octet octets)))
@@ -145,8 +179,6 @@ Depending on specific collector the arguments can be treated differently."))
 (defclass blist (bclass) ())
 
 (defclass blist-collector () ())
-
-(defgeneric blist-collect (collector element))
 
 (define-collect-with-arguments blist-collect (collector blist-collector) ((element bclass)))
 
