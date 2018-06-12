@@ -40,6 +40,10 @@
 
 Depending on specific collector the arguments can be treated differently."))
 
+(defgeneric finalize-collector (collector))
+
+(defmethod finalize-collector (collector) collector)
+
 (defun make-keyword (name)
   (values (intern (string-upcase (string name)) "KEYWORD")))
 
@@ -62,20 +66,33 @@ Depending on specific collector the arguments can be treated differently."))
 	     (,method-name ,collector-name ,@argument-names)))))))
 
 (defmacro define-collector (type (collector-name collector-type (&rest superclasses)) (&rest slots) &body body)
-  (flet ((expand-slot-description (slot)
-	   (destructuring-bind (name &rest slot-options &key &allow-other-keys) slot
-	     `(,name :initarg ,(getf slot-options :initarg (make-keyword name))
-		     :reader ,(getf slot-options :reader name)
-		     ,@(alexandria:remove-from-plist slot-options :initarg :reader)))))
-    `(progn
-       (defclass ,collector-type (,@superclasses)
-	 (,@(mapcar #'expand-slot-description slots)))
-       )))
+  (let ((slot-names (mapcar #'first slots)))
+    (flet ((expand-slot-description (slot)
+	     (destructuring-bind (name &rest slot-options &key &allow-other-keys) slot
+	       `(,name :initarg ,(getf slot-options :initarg (make-keyword name))
+		       :reader ,(getf slot-options :reader name)
+		       ,@(alexandria:remove-from-plist slot-options :initarg :reader))))
+	   (expand-collect-statement (statement) 
+	     (destructuring-bind (method-name (&rest method-arguments) &rest method-body) statement 
+	       `(define-collect-with-arguments ,method-name (,collector-name ,collector-type) (,@method-arguments)
+		  (with-slots (,@slot-names) ,collector-name
+		    ,@method-body)))))
+      (multiple-value-bind (collect-statements statements)
+	  (serapeum:partition #'(lambda (thing) (and (consp thing) (eq :collect (first thing)))) body)
+	`(progn
+	   (defclass ,collector-type (,@superclasses)
+	     (,@(mapcar #'expand-slot-description slots)))
+	   ,@(mapcar #'expand-collect-statement collect-statements) 
+	   ,@(if (null statements)
+		 nil
+		 (list `(defmethod finalize-collector ((,collector-name ,collector-type))
+			  (with-slots (,@slot-names) ,collector-name
+			    ,@statements)))))))))
 
-;; (define-collector 'octets (collector octets-collector ())
-;;   ((octets :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t)))
-;;   (:collect ((octet octet)) (vector-push-extend octet octets))
-;;   (make-array (length octets) :element-type 'octet :initial-contents octets))
+(define-collector 'octets (collector octets-collector ())
+    ((octets :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t)))
+  (:collect ((octet octet)) (vector-push-extend octet octets))
+  (make-array (length octets) :element-type 'octet :initial-contents octets))
 
 (defclass octets-collector ()
   ((octets :initarg :octets :reader octets
@@ -94,8 +111,6 @@ Depending on specific collector the arguments can be treated differently."))
 (defmacro collecting-octets (octets &body body)
   `(collecting ,octets 'octets-collector
      ,@body))
-
-(defgeneric finalize-collector (collector))
 
 (defmethod finalize-collector (collector)
   collector)
