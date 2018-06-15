@@ -31,86 +31,12 @@
 (defmethod make-collector (type)
   (make-instance type))
 
-(defmacro register-collector (collector-type type &body body)
-  `(defmethod make-collector ((type (eql ,type)))
-     (make-instance ,collector-type ,@body)))
-
 (defgeneric collect (collector &rest arguments)
   (:documentation "Adds element(s) to the collector.
 
 Depending on specific collector the arguments can be treated differently."))
 
 (defgeneric finalize-collector (collector))
-
-(defmethod finalize-collector (collector) collector)
-
-(defun make-keyword (name)
-  (values (intern (string-upcase (string name)) "KEYWORD")))
-
-(defmacro define-collect-with-arguments (method-name (collector-name collector-type) (&rest arguments) &body body)
-  (flet ((generate-check-types (arguments)
-	   (mapcar #'(lambda (thing)
-		       (when (and (consp thing) (>= (length thing) 2))
-			 (destructuring-bind (name type) thing
-			   `(check-type ,name ,type))))
-		   arguments)))
-    (let ((argument-names (mapcar #'alexandria:ensure-car arguments)))
-      `(progn
-	 (defgeneric ,method-name (,collector-name ,@argument-names))
-	 ,@(when body
-	     (list `(defmethod ,method-name ((,collector-name ,collector-type) ,@argument-names)
-		      ,@body)))
-	 (defmethod collect ((,collector-name ,collector-type) &rest arguments)
-	   (destructuring-bind (,@argument-names) arguments
-	     ,@(generate-check-types arguments)
-	     (,method-name ,collector-name ,@argument-names)))))))
-
-(defmacro define-collector (type (collector-name collector-type (&rest superclasses)) (&rest slots) &body body)
-  (let ((slot-names (mapcar #'first slots)))
-    (flet ((expand-slot-description (slot)
-	     (destructuring-bind (name &rest slot-options &key &allow-other-keys) slot
-	       `(,name :initarg ,(getf slot-options :initarg (make-keyword name))
-		       :reader ,(getf slot-options :reader name)
-		       ,@(alexandria:remove-from-plist slot-options :initarg :reader))))
-	   (expand-collect-statement (statement) 
-	     (destructuring-bind (method-name (&rest method-arguments) &rest method-body) statement 
-	       `(define-collect-with-arguments ,method-name (,collector-name ,collector-type) (,@method-arguments)
-		  (with-slots (,@slot-names) ,collector-name
-		    ,@method-body)))))
-      (multiple-value-bind (collect-statements statements)
-	  (serapeum:partition #'(lambda (thing) (and (consp thing) (eq :collect (first thing)))) body)
-	`(progn
-	   (defclass ,collector-type (,@superclasses)
-	     (,@(mapcar #'expand-slot-description slots)))
-	   ,@(mapcar #'expand-collect-statement collect-statements) 
-	   ,@(if (null statements)
-		 nil
-		 (list `(defmethod finalize-collector ((,collector-name ,collector-type))
-			  (with-slots (,@slot-names) ,collector-name
-			    ,@statements)))))))))
-
-(define-collector 'octets (collector octets-collector ())
-    ((octets :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t)))
-  (:collect ((octet octet)) (vector-push-extend octet octets))
-  (make-array (length octets) :element-type 'octet :initial-contents octets))
-
-(defclass octets-collector ()
-  ((octets :initarg :octets :reader octets
-	   :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t))))
-
-(register-collector 'octets-collector 'octets)
-
-(define-collect-with-arguments octets-collect (collector octets-collector) ((octet octet))
-  (with-slots (octets) collector
-    (vector-push-extend octet octets)))
-
-(defmethod finalize-collector ((collector octets-collector))
-  (with-slots (octets) collector
-    (make-array (length octets) :element-type 'octet :initial-contents octets)))
-
-(defmacro collecting-octets (octets &body body)
-  `(collecting ,octets 'octets-collector
-     ,@body))
 
 (defmethod finalize-collector (collector)
   collector)
@@ -119,6 +45,73 @@ Depending on specific collector the arguments can be treated differently."))
   `(let ((,var (make-collector ,type)))
      ,@body
      (finalize-collector ,var)))
+
+(serapeum:eval-always
+  (defun make-keyword (name)
+    (values (intern (string-upcase (string name)) "KEYWORD"))))
+
+(defmacro define-collect-with-arguments (method-name (collector-name collector-type) (&rest arguments) &body body)
+  (flet ((generate-check-types (arguments)
+	   (mapcar #'(lambda (thing)
+		       (when (and (consp thing) (>= (length thing) 2))
+			 (destructuring-bind (name type) thing
+			   `(check-type ,name ,type))))
+		   arguments)))
+    (let ((argument-names (mapcar #'alexandria:ensure-car arguments))
+	  (name (if (consp method-name)
+		    (first method-name)
+		    method-name))
+	  (annotations (if (consp method-name)
+			   (rest method-name)
+			   nil)))
+      `(progn
+	 ,@(unless (getf annotations :override)
+	     (list
+	      `(progn
+		 (defgeneric ,name (,collector-name ,@argument-names))
+		 (defmethod collect ((,collector-name ,collector-type) &rest arguments)
+		   (destructuring-bind (,@argument-names) arguments
+		     ,@(generate-check-types arguments)
+		     (,name ,collector-name ,@argument-names))))))
+	 ,@(when body
+	     (list `(defmethod ,name ((,collector-name ,collector-type) ,@argument-names)
+		      ,@body)))))))
+
+(defmacro define-collector (type (collector-name collector-type (&rest superclasses) &key abstract) (&rest slots) &body body)
+  (multiple-value-bind (inherited-statements slots) 
+      (serapeum:partition #'(lambda (thing) (and (consp thing) (eq :inherit (first thing)))) slots)
+    (let* ((inherited-slots (mapcar #'rest inherited-statements))
+	   (slot-names (append (mapcar #'first slots) (mapcar #'first inherited-slots))))
+      (flet ((expand-slot-description (slot)
+	       (destructuring-bind (name &rest slot-options &key &allow-other-keys) slot
+		 `(,name :initarg ,(getf slot-options :initarg (make-keyword name))
+			 :reader ,(getf slot-options :reader name)
+			 ,@(alexandria:remove-from-plist slot-options :initarg :reader))))
+	     (expand-collect-statement (statement) 
+	       (destructuring-bind (method-name (&rest method-arguments) &rest method-body) (rest statement)
+		 `(define-collect-with-arguments ,method-name (,collector-name ,collector-type ) (,@method-arguments)
+		    ,@(when (and slot-names method-body)
+			(list
+			 `(with-slots (,@slot-names) ,collector-name
+			    ,@method-body)))))))
+	(multiple-value-bind (collect-statements finalize-body)
+	    (serapeum:partition #'(lambda (thing) (and (consp thing) (eq :collect (first thing)))) body)
+	  `(progn
+	     (defclass ,collector-type (,@superclasses)
+	       (,@(mapcar #'expand-slot-description slots)))
+	     ,@(unless abstract
+		 (list
+		  `(defmethod make-collector ((type (eql (quote ,type))))
+		     (make-instance (quote ,collector-type)))))
+	     ,@(mapcar #'expand-collect-statement collect-statements) 
+	     ,@(when slot-names
+		 (list
+		  `(progn
+		     ,@(when finalize-body
+			 (list
+			  `(defmethod finalize-collector ((,collector-name ,collector-type))
+			     (with-slots (,@slot-names) ,collector-name
+			       ,@finalize-body)))))))))))))
 
 ;; Octet
 
@@ -133,19 +126,10 @@ Depending on specific collector the arguments can be treated differently."))
 	      :element-type 'octet
 	      :initial-contents contents))
 
-(defclass octets-collector ()
-  ((octets :initarg :octets :reader octets
-	   :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t))))
-
-(register-collector 'octets-collector 'octets)
-
-(define-collect-with-arguments octets-collect (collector octets-collector) ((octet octet))
-  (with-slots (octets) collector
-    (vector-push-extend octet octets)))
-
-(defmethod finalize-collector ((collector octets-collector))
-  (with-slots (octets) collector
-    (make-array (length octets) :element-type 'octet :initial-contents octets)))
+(define-collector octets (collector octets-collector ())
+    ((octets :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t)))
+  (:collect octet-collect ((octet octet)) (vector-push-extend octet octets))
+  (make-array (length octets) :element-type 'octet :initial-contents octets))
 
 (defmacro collecting-octets (octets &body body)
   `(collecting ,octets 'octets-collector
@@ -158,20 +142,16 @@ Depending on specific collector the arguments can be treated differently."))
 (defclass bint (bclass)
   ((octets :initarg :octets :reader octets)))
 
-(defclass bint-collector (octets-collector) ())
-
-(defmethod finalize-collector ((collector bint-collector))
-  (with-slots (octets) collector
-    (make-instance 'bint :octets octets)))
+(define-collector bint (collector bint-collector (octets-collector))
+    ((:inherit octets))
+  (make-instance 'bint :octets octets))
 
 (defclass bstr (bclass)
   ((octets :initarg :octets :reader octets)))
 
-(defclass bstr-collector (octets-collector) ())
-
-(defmethod finalize-collector ((collector bstr-collector))
-  (with-slots (octets) collector
-    (make-instance 'bstr :octets octets)))
+(define-collector bstr (collector bstr-collector (octets-collector))
+    ((:inherit octets))
+  (make-instance 'bstr :octets octets))
 
 (defclass finalizable-once-collector ()
   ((finalized-p :initform nil)))
@@ -193,20 +173,15 @@ Depending on specific collector the arguments can be treated differently."))
 
 (defclass blist (bclass) ())
 
-(defclass blist-collector () ())
+(define-collector blist (collector blist-collector () :abstract t)
+    ()
+  (:collect blist-collect ((element bclass))))
 
-(define-collect-with-arguments blist-collect (collector blist-collector) ((element bclass)))
-
-(defclass blist-list (blist blist-collector finalizable-once-collector)
-  ((elements :initarg :elements :reader elements :initform nil)))
-
-(defmethod blist-collect ((collector blist-list) element)
-  (with-slots (elements) collector
-    (push element elements)))
-
-(defmethod finalize-collector ((collector blist-list))
-  (with-slots (elements) collector
-    (setf elements (nreverse elements)))
+(define-collector blist-list (collector blist-list (blist blist-collector finalizable-once-collector))
+    ((elements :initform nil))
+  (:collect (blist-collect :override t) ((element))
+    (push element elements))
+  (setf elements (nreverse elements))
   collector)
 
 (defclass blist-vector (blist)
