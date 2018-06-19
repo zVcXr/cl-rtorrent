@@ -57,13 +57,10 @@ Depending on specific collector the arguments can be treated differently."))
 			 (destructuring-bind (name type) thing
 			   `(check-type ,name ,type))))
 		   arguments)))
-    (let ((argument-names (mapcar #'alexandria:ensure-car arguments))
-	  (name (if (consp method-name)
-		    (first method-name)
-		    method-name))
-	  (annotations (if (consp method-name)
-			   (rest method-name)
-			   nil)))
+    (let* ((argument-names (mapcar #'alexandria:ensure-car arguments))
+	   (name-with-annotations (alexandria:ensure-cons method-name))
+	   (name (first name-with-annotations))
+	   (annotations (rest name-with-annotations)))
       `(progn
 	 ,@(unless (getf annotations :override)
 	     (list
@@ -104,14 +101,11 @@ Depending on specific collector the arguments can be treated differently."))
 		  `(defmethod make-collector ((type (eql (quote ,type))))
 		     (make-instance (quote ,collector-type)))))
 	     ,@(mapcar #'expand-collect-statement collect-statements) 
-	     ,@(when slot-names
+	     ,@(when (and slot-names finalize-body)
 		 (list
-		  `(progn
-		     ,@(when finalize-body
-			 (list
-			  `(defmethod finalize-collector ((,collector-name ,collector-type))
-			     (with-slots (,@slot-names) ,collector-name
-			       ,@finalize-body)))))))))))))
+		  `(defmethod finalize-collector ((,collector-name ,collector-type))
+		     (with-slots (,@slot-names) ,collector-name
+		       ,@finalize-body))))))))))
 
 ;; Octet
 
@@ -153,69 +147,37 @@ Depending on specific collector the arguments can be treated differently."))
     ((:inherit octets))
   (make-instance 'bstr :octets octets))
 
-(defclass finalizable-once-collector ()
-  ((finalized-p :initform nil)))
-
-(defmethod collect :around ((collector finalizable-once-collector) &rest args)
-  (declare (ignore args))
-  (with-slots (finalized-p) collector
-    ;; TODO signal error?
-    (unless finalized-p
-      (call-next-method))))
-
-(defmethod finalize-collector :around ((collector finalizable-once-collector))
-  (with-slots (finalized-p) collector
-    ;; TODO signal error?
-    (unless finalized-p
-      (let ((result (call-next-method)))
-	(setf finalized-p t)
-	result))))
-
-(defclass blist (bclass) ())
+(defclass blist (bclass)
+  ((elements :initarg :elements :reader elements)))
 
 (define-collector blist (collector blist-collector () :abstract t)
     ()
   (:collect blist-collect ((element bclass))))
 
-(define-collector blist-list (collector blist-list (blist blist-collector finalizable-once-collector))
+(define-collector blist-list (collector blist-list-collector (blist-collector))
     ((elements :initform nil))
-  (:collect (blist-collect :override t) ((element))
+  (:collect (blist-collect :override t) (element)
     (push element elements))
-  (setf elements (nreverse elements))
-  collector)
+  (make-instance 'blist :elements (nreverse elements)))
 
-(defclass blist-vector (blist)
+(define-collector blist-vector (collector blist-vector-collector (blist-collector))
+    ((elements :initform (make-array 0 :element-type 'bclass :fill-pointer 0 :adjustable t)))
+  (:collect (blist-collect :override t) (element)
+    (vector-push-extend element elements))
+  (make-instance 'blist :elements (make-array (length elements) :element-type 'bclass :initial-contents elements)))
+
+(defclass bdict (bclass)
   ((elements :initarg :elements :reader elements)))
 
-(defclass blist-vector-collector (blist-collector)
-  ((elements :initarg :elements :reader elements
-	     :initform (make-array 0 :element-type 'bclass :fill-pointer 0 :adjustable t))))
+(define-collector bdict (collector bdict-collector () :abstract t)
+    ()
+  (:collect bdict-collect ((key bstr) (value bclass))))
 
-(defmethod blist-collect ((collector blist-vector-collector) element)
-  (with-slots (elements) collector
-    (vector-push-extend element elements)))
-
-(defmethod finalize-collector ((collector blist-vector-collector))
-  (with-slots (elements) collector
-    (make-instance 'blist-vector :elements elements)))
-
-(defclass bdict (bclass) ())
-
-(defclass bdict-collector () ())
-
-(define-collect-with-arguments bdict-collect (collector bdict-collector) ((key bstr) (value bclass)))
-
-(defclass bdict-alist (bdict bdict-collector finalizable-once-collector)
-  ((elements :initarg :elements :reader elements :initform nil)))
-
-(defmethod bdict-collect ((collector bdict-alist) key value)
-  (with-slots (elements) collector
-    (setf elements (acons key value elements))))
-
-(defmethod finalize-collector ((collector bdict-alist))
-  (with-slots (elements) collector
-    (setf elements (nreverse elements)))
-  collector)
+(define-collector bdict-alist (collector bdict-alist-collector (bdict-collector))
+    ((elements :initform nil))
+  (:collect (bdict-collect :override t) (key value)
+    (setf elements (acons key value elements)))
+  (make-instance 'bdict :elements (nreverse elements)))
 
 (defclass bdict-hashmap (bdict)
   ((elements :initarg :elements :reader elements
