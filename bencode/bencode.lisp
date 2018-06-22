@@ -76,6 +76,10 @@ Depending on specific collector the arguments can be treated differently."))
 	       (list `(defmethod ,name ((,var ,collector-type) ,@argument-names)
 			,@body))))))))
 
+(defmacro define-collector-synonym (type-synonym collector-type)
+  `(defmethod make-collector ((type (eql (quote ,type-synonym))))
+     (make-instance (quote ,collector-type))))
+
 (defmacro define-collector (collector-type (&rest superclasses) (&rest slots) &body body)
   (multiple-value-bind (inherited-statements slots) 
       (serapeum:partition #'(lambda (thing)
@@ -87,7 +91,7 @@ Depending on specific collector the arguments can be treated differently."))
 	   (collector-type-with-keys (alexandria:ensure-cons collector-type))
 	   (collector-type (first collector-type-with-keys))
 	   (collector-keys (rest collector-type-with-keys)))
-      (destructuring-bind (&key (var (gensym)) synonym &allow-other-keys) collector-keys
+      (destructuring-bind (&key (var (gensym)) &allow-other-keys) collector-keys
 	(flet ((expand-slot-description (slot)
 		 (destructuring-bind (name &rest slot-options
 				      &key
@@ -117,10 +121,6 @@ Depending on specific collector the arguments can be treated differently."))
 	    `(progn
 	       (defclass ,collector-type (,@superclasses)
 		 (,@(mapcar #'expand-slot-description slots)))
-	       ,@(when synonym
-		   (list
-		    `(defmethod make-collector ((type (eql (quote ,synonym))))
-		       (make-instance (quote ,collector-type)))))
 	       ,@(mapcar #'expand-collect-statement collect-statements) 
 	       ,@(when (and slot-names finalize-body)
 		   (list
@@ -141,11 +141,12 @@ Depending on specific collector the arguments can be treated differently."))
 	      :element-type 'octet
 	      :initial-contents contents))
 
-(define-collector (octets-collector :synonym octets) ()
+(define-collector octets-collector ()
     ((octets :initform (make-array 0 :element-type 'octet :fill-pointer 0 :adjustable t)))
   (:collect octet-collect ((octet octet))
     (vector-push-extend octet octets))
   (make-array (length octets) :element-type 'octet :initial-contents octets))
+(define-collector-synonym octets octets-collector)
 
 ;; Object model
 
@@ -154,16 +155,18 @@ Depending on specific collector the arguments can be treated differently."))
 (defclass bint (bclass)
   ((octets :initarg :octets :reader octets)))
 
-(define-collector (bint-collector :synonym bint) (octets-collector)
+(define-collector bint-collector (octets-collector)
     ((:inherit octets))
   (make-instance 'bint :octets octets))
+(define-collector-synonym bint bint-collector)
 
 (defclass bstr (bclass)
   ((octets :initarg :octets :reader octets)))
 
-(define-collector (bstr-collector :synonym bstr) (octets-collector)
+(define-collector bstr-collector (octets-collector)
     ((:inherit octets))
   (make-instance 'bstr :octets octets))
+(define-collector-synonym bstr bstr-collector)
 
 (defclass blist (bclass)
   ((elements :initarg :elements :reader elements)))
@@ -171,17 +174,19 @@ Depending on specific collector the arguments can be treated differently."))
 (define-collector blist-collector () ()
   (:collect blist-collect ((element bclass))))
 
-(define-collector (blist-list-collector :synonym blist-list) (blist-collector)
+(define-collector blist-list-collector (blist-collector)
     ((elements :initform nil))
   (:collect (blist-collect :override t) (element)
     (push element elements))
   (make-instance 'blist :elements (nreverse elements)))
+(define-collector-synonym blist-list blist-list-collector)
 
-(define-collector (blist-vector-collector :synonym blist-vector) (blist-collector)
+(define-collector blist-vector-collector (blist-collector)
     ((elements :initform (make-array 0 :element-type 'bclass :fill-pointer 0 :adjustable t)))
   (:collect (blist-collect :override t) (element)
     (vector-push-extend element elements))
   (make-instance 'blist :elements (make-array (length elements) :element-type 'bclass :initial-contents elements)))
+(define-collector-synonym blist-vector blist-vector-collector)
 
 (defclass bdict (bclass)
   ((elements :initarg :elements :reader elements)))
@@ -189,17 +194,19 @@ Depending on specific collector the arguments can be treated differently."))
 (define-collector bdict-collector () ()
   (:collect bdict-collect ((key bstr) (value bclass))))
 
-(define-collector (bdict-alist-collector :synonym bdict-alist) (bdict-collector)
+(define-collector bdict-alist-collector (bdict-collector)
     ((elements :initform nil))
   (:collect (bdict-collect :override t) (key value)
     (setf elements (acons key value elements)))
   (make-instance 'bdict :elements (nreverse elements)))
+(define-collector-synonym bdict-alist bdict-alist-collector)
 
-(define-collector (bdict-plist-collector :synonym bdict-plist) (bdict-collector)
+(define-collector bdict-plist-collector (bdict-collector)
     ((elements :initform nil))
   (:collect (bdict-collect :override t) (key value)
     (setf (getf elements key) value))
   (make-instance 'bdict :elements elements))
+(define-collector-synonym bdict-plist bdict-plist-collector)
 
 (defclass bdict-hashmap (bdict)
   ((elements :initarg :elements :reader elements
