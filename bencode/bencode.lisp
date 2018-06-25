@@ -42,7 +42,7 @@ Depending on specific collector the arguments can be treated differently."))
   collector)
 
 (defmacro collecting (type var &body body)
-  `(let ((,var (make-collector ,type)))
+  `(let ((,var (make-collector (quote ,type))))
      ,@body
      (finalize-collector ,var)))
 
@@ -292,7 +292,7 @@ Depending on specific collector the arguments can be treated differently."))
 	     :expected-octets (arguments-to-octets (ascii-char->octet char))))))
 
 (defun read-until-ascii-char (char) 
-  (collecting 'octets octets
+  (collecting octets octets
     (let-while it (read-byte *read-stream*) (/= it (ascii-char->octet char)) 
       (collect octets it))))
 
@@ -305,7 +305,7 @@ Depending on specific collector the arguments can be treated differently."))
 (defun read-string ()
   (let* ((length (read-string-length))
 	 (octets
-	   (collecting 'octets octets
+	   (collecting octets octets
 	     (dotimes (i length)
 	       (collect octets (read-byte *read-stream*))))))
     ;; TODO: this is not the right place for string decoding
